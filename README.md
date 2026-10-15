@@ -1,2 +1,2 @@
-# Inventarisir-Smaziz
+# Scanner
 Pencatatan Sarana dan Prasarana
