@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scanner Inventaris Sekolah</title>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+  header { width: 100%; max-width: 480px; padding: 16px 20px 8px; }
+  header h1 { margin: 0; font-size: 18px; color: #fff; }
+  header p { margin: 4px 0 0; font-size: 13px; color: #94a3b8; }
+  main { width: 100%; max-width: 480px; padding: 8px 20px 24px; display: flex; flex-direction: column; gap: 14px; }
+  #reader { width: 100%; min-height: 260px; background: #1e293b; border-radius: 16px; overflow: hidden; }
+  #status { font-size: 14px; text-align: center; color: #cbd5e1; min-height: 20px; }
+  #status.error { color: #fda4af; }
+  #status.ok { color: #86efac; }
+  button, .btn { width: 100%; padding: 12px 16px; border: 0; border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .btn-primary { background: #0284c7; color: #fff; }
+  .btn-secondary { background: #334155; color: #e2e8f0; }
+  .row { display: flex; gap: 8px; }
+  .row input { flex: 1; padding: 12px; border-radius: 12px; border: 1px solid #475569; background: #1e293b; color: #fff; font-size: 15px; min-width: 0; }
+  .row button { width: auto; background: #fff; color: #0f172a; }
+  #result { display: none; text-align: center; background: #1e293b; border-radius: 16px; padding: 20px; }
+  #result .code { font-size: 22px; font-weight: 700; color: #fff; word-break: break-all; margin: 8px 0 14px; }
+  .divider { text-align: center; font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📷 Scanner Inventaris Sekolah</h1>
+  <p id="purpose">Arahkan kamera ke QR code atau barcode barang.</p>
+</header>
+
+<main>
+  <div id="reader"></div>
+  <div id="status">Menyalakan kamera...</div>
+  <button class="btn-secondary" id="btnSwitch" style="display:none" onclick="switchCamera()">Ganti Kamera</button>
+
+  <div class="divider">atau ketik kode manual</div>
+  <div class="row">
+    <input type="text" id="manual" placeholder="Masukkan kode barang..." autocomplete="off">
+    <button onclick="submitManual()">Kirim</button>
+  </div>
+
+  <div id="result">
+    <div id="resultMsg">Kode terbaca:</div>
+    <div class="code" id="resultCode"></div>
+    <button class="btn-primary" id="btnOpenApp" style="display:none" onclick="openApp()">Buka Aplikasi Inventaris</button>
+    <button class="btn-secondary" id="btnCopy" style="margin-top:8px" onclick="copyCode()">Salin Kode</button>
+    <button class="btn-secondary" style="margin-top:8px" onclick="scanAgain()">Scan Lagi</button>
+  </div>
+</main>
+
+<script>
+// ===================== PENGATURAN =====================
+// Alamat web app Apps Script (yang berakhiran /exec). Dipakai sebagai cadangan
+// kalau tab ini tidak dibuka lewat tombol di aplikasi (misalnya dibuka langsung).
+// Contoh: 'https://script.google.com/macros/s/AKfycb.../exec'
+const APP_URL = '';
+// ======================================================
+
+const params = new URLSearchParams(location.search);
+const ALLOWED_CTX = ['lookup', 'pinjam', 'stok-masuk'];
+const ctx = ALLOWED_CTX.includes(params.get('ctx')) ? params.get('ctx') : 'lookup';
+
+const PURPOSE = {
+  'lookup': 'Scan barang untuk melihat detailnya.',
+  'pinjam': 'Scan barang yang akan dipinjam.',
+  'stok-masuk': 'Scan barang untuk mencatat stok masuk.'
+};
+document.getElementById('purpose').textContent = PURPOSE[ctx];
+
+const statusEl = document.getElementById('status');
+let scanner = null;
+let cameras = [];
+let camIndex = 0;
+let handled = false;
+let lastCode = '';
+
+function setStatus(msg, type) {
+  statusEl.textContent = msg;
+  statusEl.className = type || '';
+}
+
+async function startCamera() {
+  handled = false;
+  document.getElementById('result').style.display = 'none';
+  try {
+    if (!scanner) scanner = new Html5Qrcode('reader', { verbose: false });
+    if (!cameras.length) {
+      cameras = await Html5Qrcode.getCameras();
+      // Pilih kamera belakang bila ada
+      const back = cameras.findIndex(c => /back|rear|belakang|environment/i.test(c.label));
+      camIndex = back >= 0 ? back : 0;
+    }
+    if (!cameras.length) throw new Error('no camera');
+    document.getElementById('btnSwitch').style.display = cameras.length > 1 ? 'block' : 'none';
+
+    await scanner.start(
+      cameras[camIndex].id,
+      {
+        fps: 10,
+        qrbox: (w, h) => { const s = Math.floor(Math.min(w, h) * 0.75); return { width: s, height: Math.floor(s * 0.7) }; }
+      },
+      onDecoded,
+      () => {}
+    );
+    setStatus('Arahkan kamera ke kode...');
+  } catch (err) {
+    console.error(err);
+    const denied = /permission|denied|NotAllowed/i.test(String(err));
+    setStatus(denied
+      ? 'Izin kamera ditolak. Izinkan kamera di pengaturan browser, lalu muat ulang halaman ini.'
+      : 'Kamera tidak bisa dinyalakan. Ketik kode manual di bawah.', 'error');
+  }
+}
+
+async function stopCamera() {
+  try { if (scanner && scanner.isScanning) await scanner.stop(); } catch (e) { console.log(e); }
+}
+
+async function switchCamera() {
+  if (cameras.length < 2) return;
+  await stopCamera();
+  camIndex = (camIndex + 1) % cameras.length;
+  startCamera();
+}
+
+function onDecoded(text) {
+  if (handled) return;
+  handled = true;
+  if (navigator.vibrate) navigator.vibrate(100);
+  stopCamera();
+  deliver(String(text).trim());
+}
+
+function submitManual() {
+  const v = document.getElementById('manual').value.trim();
+  if (!v) return;
+  handled = true;
+  stopCamera();
+  deliver(v);
+}
+document.getElementById('manual').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); submitManual(); }
+});
+
+function deliver(code) {
+  lastCode = code;
+  document.getElementById('resultCode').textContent = code;
+  document.getElementById('result').style.display = 'block';
+
+  // Cara 1 (utama): kirim ke tab aplikasi yang membuka halaman ini, lalu tutup.
+  // Tidak perlu login ulang karena aplikasi tetap terbuka di tab asalnya.
+  if (window.opener && !window.opener.closed) {
+    try {
+      window.opener.postMessage({ type: 'sch-scan', code: code, ctx: ctx }, '*');
+      setStatus('Kode terkirim ke aplikasi. Tab ini akan ditutup...', 'ok');
+      document.getElementById('resultMsg').textContent = 'Terkirim ke aplikasi:';
+      setTimeout(() => {
+        window.close();
+        // Kalau browser menolak menutup, beri petunjuk
+        setStatus('Kode terkirim. Silakan kembali ke tab aplikasi.', 'ok');
+      }, 700);
+      return;
+    } catch (e) { console.log(e); }
+  }
+
+  // Cara 2 (cadangan): buka aplikasi lewat link berisi kode (perlu login jika belum).
+  setStatus('Kode terbaca.', 'ok');
+  if (APP_URL) document.getElementById('btnOpenApp').style.display = 'block';
+}
+
+function openApp() {
+  if (!APP_URL || !lastCode) return;
+  const url = APP_URL + (APP_URL.includes('?') ? '&' : '?')
+    + 'kode=' + encodeURIComponent(lastCode) + '&ctx=' + encodeURIComponent(ctx);
+  location.href = url;
+}
+
+function copyCode() {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(lastCode).then(() => setStatus('Kode disalin.', 'ok'));
+  }
+}
+
+function scanAgain() {
+  document.getElementById('manual').value = '';
+  startCamera();
+}
+
+window.addEventListener('load', startCamera);
+window.addEventListener('pagehide', stopCamera);
+</script>
+</body>
+</html>
